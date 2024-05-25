@@ -73,16 +73,18 @@ class TrainerResults(NamedTuple):
 
 
 def train_loop(
-    lr: float = 1e-4,
-    max_iters: int = 1000,
-    eval_interval: int = 100,
+    lr: float = 1e-3,
+    max_iters: int = 100,
+    eval_interval: int = 10,
     batch_size: int = 16,
     block_size: int = 32,
     top_k: int = 2,
 ) -> TrainerResults:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     tokenizer = Tokenizer()
     loader = Loader(tokenizer)
+
     model = get_model(
         vocab_size=tokenizer.vocab_size,
         block_size=block_size,
@@ -90,31 +92,36 @@ def train_loop(
         router_class=NoisyTopKRouter,  # type: ignore
     ).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    # create a PyTorch optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     train_losses, val_losses = [], []
-    for iteration in range(max_iters):
+    for iter in range(max_iters):
         # every once in a while evaluate the loss on train and val sets
-        if iteration % eval_interval == 0 or iteration == max_iters - 1:
-            losses: CheckpointLoss = estimate_loss(
+        if iter % eval_interval == 0 or iter == max_iters - 1:
+            losses = estimate_loss(
                 model=model,
                 get_batch=lambda split: loader.get_batch(split, batch_size, block_size),
             )
-            val_losses.append(losses["val"])
             print(
-                f"step {iteration}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
+                f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
             )
+            val_losses.append(losses["val"])
 
         # sample a batch of data
-        xb, yb = loader.get_batch("train", batch_size, block_size)
+        xb, yb = loader.get_batch("train", batch_size=batch_size, block_size=block_size)
         xb, yb = xb.to(device), yb.to(device)
 
         # evaluate the loss
         _, loss = model(xb, yb)
-        loss.backward()
         train_losses.append(loss.item())
 
         optimizer.zero_grad(set_to_none=True)
+        loss.backward()
         optimizer.step()
 
-    return TrainerResults(model, train_losses, val_losses)
+    return TrainerResults(model=model, train_losses=train_losses, val_losses=val_losses)
+
+
+if __name__ == "__main__":
+    train_loop()
