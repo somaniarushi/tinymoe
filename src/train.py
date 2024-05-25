@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+from torch.nn import init
 from typing import Callable, List, TypedDict, NamedTuple
 
 from src.data.loader import Loader
@@ -34,6 +36,11 @@ def estimate_loss(
     return CheckpointLoss(train=out["train"], val=out["val"])
 
 
+def kaiming_init_weights(m):
+    if isinstance(m, (nn.Linear)):
+        init.kaiming_normal_(m.weight)
+
+
 def get_model(
     vocab_size: int,
     block_size: int,
@@ -55,6 +62,7 @@ def get_model(
         router_class=router_class,
     )
     print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
+    model.apply(kaiming_init_weights)
     return model
 
 
@@ -70,6 +78,7 @@ def train_loop(
     eval_interval: int = 100,
     batch_size: int = 16,
     block_size: int = 32,
+    top_k: int = 2,
 ) -> TrainerResults:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = Tokenizer()
@@ -77,6 +86,7 @@ def train_loop(
     model = get_model(
         vocab_size=tokenizer.vocab_size,
         block_size=block_size,
+        top_k=top_k,
         router_class=NoisyTopKRouter,  # type: ignore
     ).to(device)
 
