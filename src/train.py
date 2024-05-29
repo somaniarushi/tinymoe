@@ -1,4 +1,5 @@
 import torch
+import wandb
 import torch.nn as nn
 from torch.nn import init
 from typing import Callable, List, TypedDict, NamedTuple
@@ -30,7 +31,7 @@ def estimate_loss(
             X, Y = get_batch(split)
             X, Y = X.to(device), Y.to(device)
             _, loss = model(X, Y)
-            losses[k] = loss.item()
+            losses[k] = loss.mean().item()
         out[split] = losses.mean()
     model.train()
     return CheckpointLoss(train=out["train"], val=out["val"])
@@ -73,14 +74,35 @@ class TrainerResults(NamedTuple):
 
 
 def train_loop(
+    experiment_name: str,
+    experiment_group: str,
     lr: float = 1e-3,
     max_iters: int = 100,
     eval_interval: int = 10,
     batch_size: int = 16,
     block_size: int = 32,
     top_k: int = 2,
+    n_experts: int = 8,
+    n_embed: int = 128,
+    n_layer: int = 8,
+    n_head: int = 8,
+    device: str = "cuda",
 ) -> TrainerResults:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
+
+    wandb.init(  # type: ignore
+        project="moe_9M",
+        name=experiment_name,
+        group=experiment_group,
+        config={
+            "lr": lr,
+            "max_iters": max_iters,
+            "eval_interval": eval_interval,
+            "batch_size": batch_size,
+            "block_size": block_size,
+            "top_k": top_k,
+        },
+    )
 
     tokenizer = Tokenizer()
     loader = Loader(tokenizer)
@@ -89,8 +111,18 @@ def train_loop(
         vocab_size=tokenizer.vocab_size,
         block_size=block_size,
         top_k=top_k,
+        n_embed=n_embed,
+        n_layer=n_layer,
+        n_head=n_head,
+        num_experts=n_experts,
         router_class=NoisyTopKRouter,  # type: ignore
-    ).to(device)
+    )
+
+    # Make it data parallel
+    # if torch.cuda.device_count() > 1:
+    #     model = nn.DataParallel(model)
+
+    model = model.to(device)
 
     # create a PyTorch optimizer
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -106,6 +138,9 @@ def train_loop(
             print(
                 f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
             )
+            wandb.log(  # type: ignore
+                {"train_loss": losses["train"], "val_loss": losses["val"]}, step=iter
+            )
             val_losses.append(losses["val"])
 
         # sample a batch of data
@@ -114,14 +149,11 @@ def train_loop(
 
         # evaluate the loss
         _, loss = model(xb, yb)
-        train_losses.append(loss.item())
+        train_losses.append(loss.mean().item())
+        wandb.log({"train_loss": loss.mean().item()}, step=iter)  # type: ignore
 
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        loss.mean().backward()
         optimizer.step()
 
     return TrainerResults(model=model, train_losses=train_losses, val_losses=val_losses)
-
-
-if __name__ == "__main__":
-    train_loop()
